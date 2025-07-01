@@ -9,11 +9,16 @@
 
 - Construção da Imagem Docker
 
-   docker build . -t streamlit_image  ou docker build -t streamlit_image .
+   docker build . -t streamlit_image
+
+  ou
+
+  docker build -t streamlit_image .
 
 - Listar images
 
   docker images
   
 - Executar um Contêiner Docker:
+  
     docker run --name streamlit_container -p 8501:8501 -d -v ${pwd}:/code streamlit_image
