@@ -1,0 +1,4 @@
+# Ignorar arquivos JSON específicos
+vagas.json
+prospects.json
+applicants.json

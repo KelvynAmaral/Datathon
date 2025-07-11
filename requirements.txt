@@ -1,8 +1,9 @@
-streamlit==1.35.0
-pandas==2.2.2
-scikit-learn==1.4.2
-numpy==1.26.4
-joblib==1.4.2
-imbalanced-learn==0.12.2
-xgboost==2.0.3
-lightgbm==4.3.0
+streamlit
+pandas
+scikit-learn
+numpy
+joblib
+imbalanced-learn
+xgboost
+lightgbm
+gdown
