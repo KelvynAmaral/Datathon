@@ -11,494 +11,355 @@ from sklearn.preprocessing import MinMaxScaler
 import PyPDF2
 from io import BytesIO
 from datetime import datetime
+from pathlib import Path
 
-# Configurações iniciais
-nltk.download('stopwords')
-stopwords = stopwords.words('portuguese')
+# --- CONFIGURAÇÃO INICIAL E CONSTANTES ---
 
-# Carregar modelo, scaler e vectorizer
-@st.cache_resource
-def load_models():
-    try:
-        model = joblib.load('modelo_rf_final.pkl')
-        scaler = joblib.load('scaler_final.pkl')
-        vectorizer = joblib.load('tfidf_vectorizer.pkl')
-        return model, scaler, vectorizer
-    except Exception as e:
-        st.error(f"Erro ao carregar o modelo: {str(e)}")
-        st.stop()
-
-model, scaler, tfidf_vectorizer = load_models()
-
-# Funções auxiliares
-def extract_text_from_pdf(uploaded_file):
-    try:
-        pdf_reader = PyPDF2.PdfReader(BytesIO(uploaded_file.read()))
-        text = ""
-        for page in pdf_reader.pages:
-            text += page.extract_text() or ""
-        return text
-    except Exception as e:
-        st.error(f"Erro ao ler PDF: {str(e)}")
-        return ""
-
-def preprocessar_texto(texto):
-    """Pré-processamento rigoroso para similaridade"""
-    if not texto:
-        return ""
-    
-    texto = str(texto).lower()
-    texto = re.sub(r'[^\w\s]', '', texto)
-    texto = re.sub(r'\s+', ' ', texto).strip()
-    
-    palavras = [palavra for palavra in texto.split() 
-               if palavra not in stopwords and len(palavra) >= 3]
-    
-    return ' '.join(palavras)
-
-def calcular_relevancia_termos(termos_encontrados, total_termos_vaga):
-    """Calcula a relevância baseada na porcentagem de termos encontrados"""
-    if not termos_encontrados or total_termos_vaga == 0:
-        return 0
-    return min(len(termos_encontrados) / total_termos_vaga, 1.0)
-
-def mapear_nivel_academico(nivel):
-    if not nivel or pd.isna(nivel) or str(nivel).strip() == '':
-        return 0
-    
-    nivel = str(nivel).lower()
-    if "doutorado" in nivel: return 5
-    if "mestrado" in nivel: return 4
-    if "pós-graduação" in nivel or "pós graduação" in nivel: return 3
-    if "ensino superior" in nivel: return 2
-    if "ensino técnico" in nivel: return 1.5
-    if "ensino médio" in nivel: return 1
-    if "ensino fundamental" in nivel: return 0.5
-    return 0
-
-def mapear_nivel_idioma(nivel):
-    if not nivel or pd.isna(nivel) or str(nivel).strip() == '':
-        return 0
-    
-    nivel = str(nivel).lower()
-    if "nenhum" in nivel: return 0
-    if "básico" in nivel: return 1
-    if "intermediário" in nivel: return 2
-    if "avançado" in nivel: return 3
-    if "fluente" in nivel: return 4
-    return 0
-
-mapa_nivel_profissional = {
+MAPA_NIVEL_PROFISSIONAL = {
     'aprendiz': 1, 'trainee': 2, 'auxiliar': 3, 'assistente': 4,
     'técnico de nível médio': 5, 'júnior': 5.5, 'analista': 6,
     'pleno': 7, 'supervisor': 7, 'líder': 7.5, 'sênior': 8,
     'especialista': 9, 'coordenador': 9, 'gerente': 10
 }
 
-def get_nivel_profissional(nivel):
-    if not nivel or pd.isna(nivel) or str(nivel).strip() == '':
-        return 0
-    return mapa_nivel_profissional.get(str(nivel).lower(), 0)
+# --- FUNÇÕES DE SETUP E CARREGAMENTO ---
 
-def calcular_status(score_combinado):
-    """Calcula o status baseado no score combinado"""
-    if score_combinado >= 0.6:
+@st.cache_resource
+def setup_nltk():
+    """Verifica e baixa os dados necessários do NLTK de forma segura."""
+    try:
+        nltk.data.find('corpora/stopwords')
+    except LookupError:
+        nltk.download('stopwords')
+    try:
+        nltk.data.find('tokenizers/punkt')
+    except LookupError:
+        nltk.download('punkt')
+    return set(stopwords.words('portuguese'))
+
+STOPWORDS_PT = setup_nltk()
+
+@st.cache_resource
+def load_models():
+    """Carrega os modelos de forma robusta, evitando erros de caminho."""
+    try:
+        base_dir = Path(__file__).resolve().parent
+        model = joblib.load(base_dir / 'modelo_rf_final.pkl')
+        scaler = joblib.load(base_dir / 'scaler_final.pkl')
+        vectorizer = joblib.load(base_dir / 'tfidf_vectorizer.pkl')
+        return model, scaler, vectorizer
+    except FileNotFoundError as e:
+        st.error(f"Erro de Ficheiro Não Encontrado: '{e.filename}'.")
+        st.warning("Certifique-se de que os ficheiros de modelo (.pkl) estão na mesma pasta que a aplicação.")
+        st.stop()
+    except Exception as e:
+        st.error(f"Erro ao carregar os modelos: {str(e)}")
+        st.stop()
+
+# --- FUNÇÕES DE PROCESSAMENTO DE DADOS ---
+
+def extract_text_from_pdf(uploaded_file: BytesIO) -> str:
+    """Extrai texto de um ficheiro PDF em memória."""
+    try:
+        pdf_reader = PyPDF2.PdfReader(uploaded_file)
+        text = "".join(page.extract_text() or "" for page in pdf_reader.pages)
+        return text
+    except Exception as e:
+        st.error(f"Erro ao ler o ficheiro PDF: {str(e)}")
+        return ""
+
+def preprocessar_texto(texto: str) -> str:
+    """Limpa e pré-processa o texto para análise."""
+    if not isinstance(texto, str):
+        return ""
+    texto = texto.lower()
+    texto = re.sub(r'[^\w\s]', ' ', texto)
+    texto = re.sub(r'\s+', ' ', texto).strip()
+    palavras = [palavra for palavra in texto.split() if palavra not in STOPWORDS_PT and len(palavra) >= 3]
+    return ' '.join(palavras)
+
+def extrair_competencias(texto_requisitos: str) -> set:
+    """Extrai competências da caixa de texto, tratando termos com múltiplas palavras."""
+    if not texto_requisitos:
+        return set()
+    return {comp.strip().lower() for comp in texto_requisitos.split(',') if comp.strip()}
+
+def mapear_nivel(texto_cv: str, mapa: dict) -> int:
+    """Função genérica para encontrar o maior nível de um mapa num texto."""
+    if not texto_cv or pd.isna(texto_cv):
+        return 0
+    texto_lower = str(texto_cv).lower()
+    niveis_encontrados = [valor for chave, valor in mapa.items() if chave in texto_lower]
+    return max(niveis_encontrados) if niveis_encontrados else 0
+
+def calcular_status(score: float) -> tuple[str, str]:
+    """Calcula o status e a cor correspondente com base no score."""
+    if score >= 0.6:
         return "✅ Apto (Alto)", "green"
-    elif score_combinado >= 0.5:
+    elif score >= 0.4:
         return "🟨 Em análise (Médio)", "orange"
     else:
         return "❌ Não apto (Baixo)", "red"
 
-def show_metrics_explanation():
-    """Exibe as explicações para o recrutador"""
-    with st.expander("🔍 Como Interpretar as Métricas", expanded=True):
-        st.markdown("""
-        ### 📊 Métricas de Avaliação
-        
-        | Métrica | Descrição | Como Interpretar |
-        |---------|-----------|------------------|
-        | **Score Combinado** | Avaliação final (0-100%) | - ✅ ≥60%: Apto<br>- 🟨 40-59%: Em análise<br>- ❌ <40%: Não apto |
-        | **Match** | % competências encontradas | Quanto maior, mais requisitos atendidos |
-        | **Probabilidade** | Previsão do modelo (0-100%) | Confiança na adequação técnica |
-        | **Aderência** | Adequação aos requisitos | ✅=Atende, △=Parcial, ❌=Não atende |
-        
-        ### ⚖️ Peso do Cálculo
-        - **40% Match de Competências** (termos da vaga no currículo)
-        - **30% Probabilidade do Modelo** (análise de 7 fatores técnicos)
-        - **20% Similaridade Textual** (análise semântica)
-        - **10% Aderência Acadêmica**
-        """)
+# --- FUNÇÕES DE RENDERIZAÇÃO DE PÁGINAS E COMPONENTES ---
 
-def main():
-    st.set_page_config(page_title="Sistema Avançado de Classificação de Candidatos", layout="wide")
-    st.title("📊 Sistema Avançado de Classificação de Candidatos")
-    
-    # Sidebar com informações
+def render_sidebar():
+    """Renderiza a barra lateral da aplicação."""
     with st.sidebar:
         st.header("ℹ️ Sobre o Sistema")
-        st.markdown("""
-        **Critérios de Avaliação:**
-        - ✅ **Apto**: Score ≥ 60%
-        - 🟨 **Em análise**: 40% ≤ Score < 60%
-        - ❌ **Não apto**: Score < 40%
-        
-        **Score Combinado:**
-        - 30% Probabilidade do modelo
-        - 40% Match de competências
-        - 20% Similaridade textual
-        - 10% Aderência acadêmica
+        st.info("""
+        Esta aplicação utiliza Machine Learning para otimizar a triagem de currículos,
+        comparando-os com os requisitos de uma vaga.
         """)
         st.divider()
-        st.markdown(f"🔄 Última atualização: {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+        st.markdown(f"**Versão:** 2.0 | {datetime.now().strftime('%d/%m/%Y')}")
 
-    # Seção de explicações
-    show_metrics_explanation()
-
-    # Seção de informações da vaga
-    with st.form("vaga_form"):
-        st.header("📝 Informações da Vaga")
-        job_title = st.text_input("Título da Vaga*", placeholder="Ex: Desenvolvedor Python Pleno")
-        job_requirements = st.text_area("Competências Técnicas Requeridas*", 
-                                      placeholder="Liste as habilidades-chave separadas por vírgula",
-                                      height=150)
-        
+def render_results(df_resultados, detalhes_candidatos, job_title):
+    """Renderiza os resultados da análise em múltiplas abas."""
+    st.success(f"✅ Análise concluída para {len(df_resultados)} candidatos para a vaga de **{job_title}**!")
+    
+    tab_dashboard, tab_ranking, tab_individual, tab_export = st.tabs(["🏆 Dashboard", "📊 Ranking Geral", "👤 Análise Individual", "📤 Exportar"])
+    
+    with tab_dashboard:
+        st.header("Dashboard da Análise")
         col1, col2 = st.columns(2)
         with col1:
-            job_academic_level = st.selectbox(
-                "Nível Acadêmico Requerido*",
-                ["", "Ensino Fundamental", "Ensino Médio", "Ensino Técnico", 
-                 "Ensino Superior", "Pós-Graduação", "Mestrado", "Doutorado"]
-            )
-            job_english = st.selectbox(
-                "Inglês Exigido*",
-                ["", "Nenhum", "Básico", "Intermediário", "Avançado", "Fluente"],
-                index=0
-            )
+            st.metric("Total de Candidatos Analisados", len(df_resultados))
+            melhor_score = df_resultados['Score Combinado'].max()
+            st.metric("Melhor Score Encontrado", f"{melhor_score:.1%}")
         with col2:
-            job_professional_level = st.selectbox(
-                "Nível Profissional*",
-                ["", "Aprendiz", "Trainee", "Auxiliar", "Assistente", "Técnico de Nível Médio", 
-                 "Júnior", "Analista", "Pleno", "Supervisor", "Líder", "Sênior", 
-                 "Especialista", "Coordenador", "Gerente"]
-            )
-            job_spanish = st.selectbox(
-                "Espanhol Exigido",
-                ["", "Nenhum", "Básico", "Intermediário", "Avançado", "Fluente"],
-                index=0
-            )
-        
-        st.header("👤 Informações dos Candidatos")
-        uploaded_files = st.file_uploader(
-            "Selecione os currículos em PDF*",
-            type=["pdf"],
-            accept_multiple_files=True,
-            help="Selecione vários arquivos de uma vez"
-        )
-        
-        # Seção para cada candidato preencher seus dados
-        st.subheader("Dados dos Candidatos")
-        candidates_data = []
-        
-        if uploaded_files:
-            for i, uploaded_file in enumerate(uploaded_files):
-                with st.expander(f"Candidato {i+1}: {uploaded_file.name}"):
-                    cols = st.columns(3)
-                    with cols[0]:
-                        academic_level = st.selectbox(
-                            f"Nível Acadêmico*",
-                            ["", "Ensino Fundamental", "Ensino Médio", "Ensino Técnico", 
-                             "Ensino Superior", "Pós-Graduação", "Mestrado", "Doutorado"],
-                            key=f"academic_{i}"
-                        )
-                    with cols[1]:
-                        english_level = st.selectbox(
-                            f"Inglês*",
-                            ["", "Nenhum", "Básico", "Intermediário", "Avançado", "Fluente"],
-                            key=f"english_{i}"
-                        )
-                    with cols[2]:
-                        spanish_level = st.selectbox(
-                            f"Espanhol",
-                            ["", "Nenhum", "Básico", "Intermediário", "Avançado", "Fluente"],
-                            key=f"spanish_{i}"
-                        )
-                    
-                    candidates_data.append({
-                        "file": uploaded_file,
-                        "academic_level": academic_level,
-                        "english_level": english_level,
-                        "spanish_level": spanish_level
-                    })
-        
-        submitted = st.form_submit_button("🔍 Avaliar Candidatos")
-        st.markdown("*Campos obrigatórios")
+            status_counts = df_resultados['Status'].value_counts()
+            st.dataframe(status_counts, use_container_width=True)
+        st.subheader("Distribuição de Status")
+        st.bar_chart(status_counts)
 
-    if submitted:
-        if not uploaded_files:
-            st.error("🚨 Por favor, envie pelo menos um currículo")
-            st.stop()
-        
-        campos_obrigatorios = {
-            "Título da Vaga": job_title,
-            "Competências Requeridas": job_requirements,
-            "Nível Acadêmico da Vaga": job_academic_level,
-            "Nível Profissional da Vaga": job_professional_level,
-            "Inglês Exigido": job_english
-        }
-        
-        campos_faltantes = [nome for nome, valor in campos_obrigatorios.items() if not valor or str(valor).strip() == '']
-        
-        if campos_faltantes:
-            st.error(f"🚨 Por favor, preencha todos os campos obrigatórios: {', '.join(campos_faltantes)}")
-            st.stop()
-
-        # Verificar dados dos candidatos
-        for i, candidate in enumerate(candidates_data):
-            if not candidate['academic_level'] or not candidate['english_level']:
-                st.error(f"🚨 Por favor, preencha os dados obrigatórios para o Candidato {i+1}")
-                st.stop()
-
-        resultados = []
-        detalhes_candidatos = []
-        
-        # Pré-processamento dos requisitos da vaga
-        req_preprocessados = preprocessar_texto(job_requirements)
-        termos_vaga = set(req_preprocessados.split())
-        total_termos_vaga = len(termos_vaga)
-        
-        # Mapear níveis da vaga
-        nivel_academico_vaga = mapear_nivel_academico(job_academic_level)
-        nivel_profissional_vaga = get_nivel_profissional(job_professional_level)
-        nivel_profissional_norm = nivel_profissional_vaga / 10
-        nivel_ingles_vaga = mapear_nivel_idioma(job_english)
-        nivel_espanhol_vaga = mapear_nivel_idioma(job_spanish)
-        
-        # Processar cada candidato
-        for idx, candidate in enumerate(candidates_data):
-            try:
-                with st.spinner(f"Processando candidato {idx+1}/{len(candidates_data)}..."):
-                    # Extrair texto do PDF
-                    candidate_cv = extract_text_from_pdf(candidate['file'])
-                    
-                    if not candidate_cv:
-                        st.warning(f"Arquivo {candidate['file'].name} vazio ou não processado")
-                        continue
-                    
-                    # Pré-processamento
-                    cv_preprocessados = preprocessar_texto(candidate_cv)
-                    
-                    # Cálculo de termos
-                    termos_cv = set(cv_preprocessados.split())
-                    termos_encontrados = list(termos_vaga & termos_cv)
-                    qtd_termos_encontrados = len(termos_encontrados)
-                    match_percent = calcular_relevancia_termos(termos_encontrados, total_termos_vaga)
-                    
-                    # Similaridade
-                    try:
-                        corpus = [req_preprocessados, cv_preprocessados]
-                        tfidf_matrix = tfidf_vectorizer.transform(corpus)
-                        similaridade = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
-                        similaridade = (similaridade + 1) / 2  # Normalizar para 0-1
-                    except Exception:
-                        similaridade = 0
-                    
-                    # Mapear níveis do candidato
-                    nivel_academico_candidato = mapear_nivel_academico(candidate['academic_level'])
-                    nivel_ingles_candidato = mapear_nivel_idioma(candidate['english_level'])
-                    nivel_espanhol_candidato = mapear_nivel_idioma(candidate['spanish_level'] or "Nenhum")
-                    
-                    # Calcular aderência
-                    aderencia_academica = 1 if nivel_academico_candidato >= nivel_academico_vaga else 0.5 if nivel_academico_candidato >= nivel_academico_vaga - 1 else 0
-                    aderencia_ingles = 1 if nivel_ingles_candidato >= nivel_ingles_vaga else 0.5 if nivel_ingles_candidato >= nivel_ingles_vaga - 1 else 0
-                    aderencia_espanhol = 1 if nivel_espanhol_candidato >= nivel_espanhol_vaga else 0.5 if nivel_espanhol_candidato >= nivel_espanhol_vaga - 1 else 0
-                    
-                    # Features para o modelo
-                    features = np.array([
-                        match_percent,
-                        similaridade,
-                        qtd_termos_encontrados,
-                        aderencia_academica,
-                        aderencia_ingles,
-                        aderencia_espanhol,
-                        nivel_profissional_norm
-                    ]).reshape(1, -1)
-                    
-                    # Normalização e predição
-                    try:
-                        features_scaled = scaler.transform(features)
-                        probabilidade = model.predict_proba(features_scaled)[0, 1]
-                    except Exception:
-                        probabilidade = 0.5
-                    
-                    # Calcular score combinado
-                    score_combinado = (probabilidade * 0.3) + (match_percent * 0.4) + (similaridade * 0.2) + (aderencia_academica * 0.1)
-                    status, cor_status = calcular_status(score_combinado)
-                    
-                    # Resultados para exibição
-                    resultados.append({
-                        "ID": idx+1,
-                        "Nome": candidate['file'].name,
-                        "Probabilidade": probabilidade,
-                        "Match": match_percent,
-                        "Status": status,
-                        "Cor Status": cor_status,
-                        "Termos": f"{qtd_termos_encontrados}/{total_termos_vaga}",
-                        "Similaridade": similaridade,
-                        "Nível Acadêmico": candidate['academic_level'],
-                        "Inglês": candidate['english_level'],
-                        "Espanhol": candidate['spanish_level'] or "Nenhum",
-                        "Score Combinado": score_combinado
-                    })
-                    
-                    detalhes_candidatos.append({
-                        "ID": idx+1,
-                        "Nome": candidate['file'].name,
-                        "TermosEncontrados": ", ".join(termos_encontrados) or "Nenhum",
-                        "TermosFaltantes": ", ".join(sorted(termos_vaga - termos_cv)[:10]) or "Nenhum",
-                        "TextoProcessado": cv_preprocessados[:500] + "...",
-                        "Probabilidade": probabilidade,
-                        "Match": match_percent,
-                        "Aderência Acadêmica": aderencia_academica,
-                        "Aderência Inglês": aderencia_ingles,
-                        "Aderência Espanhol": aderencia_espanhol
-                    })
-
-            except Exception as e:
-                st.error(f"Erro ao processar {candidate['file'].name}: {str(e)}")
-                continue
-
-        # Exibir resultados
-        st.success(f"✅ Análise concluída para {len(resultados)} candidatos!")
-        
-        # Tabela resumo
-        st.header("📊 Resultados Consolidados")
-        df_resultados = pd.DataFrame(resultados).sort_values("Score Combinado", ascending=False)
-        
+    with tab_ranking:
+        st.header("Visão Geral dos Candidatos")
         st.dataframe(
-            df_resultados[["ID", "Nome", "Score Combinado", "Status", "Probabilidade", "Match", "Termos"]],
+            df_resultados[["ID", "Nome", "Score Combinado", "Status", "Probabilidade", "Match"]],
             column_config={
-                "Score Combinado": st.column_config.ProgressColumn(
-                    "Score",
-                    format="%.1f%%",
-                    min_value=0,
-                    max_value=1,
-                ),
-                "Probabilidade": st.column_config.ProgressColumn(
-                    "Probabilidade",
-                    format="%.1f%%",
-                    min_value=0,
-                    max_value=1,
-                ),
-                "Match": st.column_config.ProgressColumn(
-                    "Match",
-                    format="%.1f%%",
-                    min_value=0,
-                    max_value=1,
-                )
+                "Score Combinado": st.column_config.ProgressColumn("Score", format="%.1f%%", min_value=0, max_value=1),
+                "Probabilidade": st.column_config.ProgressColumn("Prob.", format="%.1f%%", min_value=0, max_value=1),
+                "Match": st.column_config.ProgressColumn("Match", format="%.1f%%", min_value=0, max_value=1),
             },
             hide_index=True,
             use_container_width=True
         )
 
-        # Top candidatos
-        st.subheader("🏆 Melhores Candidatos")
-        top_candidatos = df_resultados.head(3)
-        
-        cols = st.columns(3)
-        for idx, (_, candidato) in enumerate(top_candidatos.iterrows()):
-            with cols[idx]:
-                with st.container(border=True):
-                    st.markdown(f"**{candidato['Nome']}**")
-                    
-                    # Linha com Probabilidade e Match
-                    col_metrics = st.columns(2)
-                    with col_metrics[0]:
-                        st.metric("Probabilidade", f"{candidato['Probabilidade']:.1%}")
-                    with col_metrics[1]:
-                        st.metric("Match", f"{candidato['Match']:.1%}")
-                    
-                    st.markdown(f"**Status:** :{candidato['Cor Status'].lower()}[{candidato['Status']}]")
-                    st.markdown(f"**Score Combinado:** {candidato['Score Combinado']:.1%}")
-                    st.markdown(f"**Nível Acadêmico:** {candidato['Nível Acadêmico']}")
-                    st.markdown(f"**Inglês:** {candidato['Inglês']}")
-                    st.markdown(f"**Espanhol:** {candidato['Espanhol']}")
-                    
-                    detalhes = next((d for d in detalhes_candidatos if d["ID"] == candidato["ID"]), None)
-                    if detalhes:
-                        with st.expander("Detalhes Técnicos"):
-                            st.markdown("**Competências encontradas:**")
-                            st.info(detalhes["TermosEncontrados"])
-                            st.markdown("**Principais faltantes:**")
-                            st.warning(detalhes["TermosFaltantes"])
-                            st.markdown("**Aderência:**")
-                            col_ader = st.columns(3)
-                            with col_ader[0]: st.metric("Acadêmica", f"{detalhes['Aderência Acadêmica']*100:.0f}%")
-                            with col_ader[1]: st.metric("Inglês", f"{detalhes['Aderência Inglês']*100:.0f}%")
-                            with col_ader[2]: st.metric("Espanhol", f"{detalhes['Aderência Espanhol']*100:.0f}%")
-
-        # Detalhes completos
-        st.subheader("🔍 Detalhes por Candidato")
+    with tab_individual:
+        st.header("Análise Detalhada por Candidato")
         for detalhe in detalhes_candidatos:
-            with st.expander(f"Candidato {detalhe['ID']} - {detalhe['Nome']} (Score: {detalhe['Probabilidade']*0.3 + detalhe['Match']*0.4 + detalhe['Aderência Acadêmica']*0.1:.1%})"):
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.markdown("**Competências encontradas:**")
-                    st.info(detalhe["TermosEncontrados"])
-                with col2:
-                    st.markdown("**Principais competências faltantes:**")
-                    st.warning(detalhe["TermosFaltantes"])
+            with st.container(border=True):
+                score_combinado = df_resultados.loc[df_resultados['ID'] == detalhe['ID'], 'Score Combinado'].iloc[0]
+                st.subheader(f"👤 {detalhe['Nome']} (Score: {score_combinado:.1%})")
                 
                 st.markdown("**Métricas Principais:**")
-                cols_metrics = st.columns(3)
-                with cols_metrics[0]:
-                    st.metric("Probabilidade", f"{detalhe['Probabilidade']:.1%}")
-                with cols_metrics[1]:
-                    st.metric("Match", f"{detalhe['Match']:.1%}")
-                with cols_metrics[2]:
-                    score = (detalhe['Probabilidade']*0.3 + detalhe['Match']*0.4 + detalhe['Aderência Acadêmica']*0.1)
-                    st.metric("Score Combinado", f"{score:.1%}")
-                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Probabilidade do Modelo", f"{detalhe['Probabilidade']:.1%}")
+                with col2:
+                    st.metric("Match de Competências", f"{detalhe['Match']:.1%}")
+                with col3:
+                    st.metric("Score Combinado", f"{score_combinado:.1%}")
+
                 st.markdown("**Aderência aos Requisitos:**")
-                cols_ader = st.columns(3)
-                with cols_ader[0]:
-                    st.metric("Acadêmica", f"{detalhe['Aderência Acadêmica']*100:.0f}%",
-                            help="1.0 = Atende completamente, 0.5 = Parcialmente, 0 = Não atende")
-                with cols_ader[1]:
-                    st.metric("Inglês", f"{detalhe['Aderência Inglês']*100:.0f}%",
-                            help="Comparação com o nível exigido pela vaga")
-                with cols_ader[2]:
-                    st.metric("Espanhol", f"{detalhe['Aderência Espanhol']*100:.0f}%",
-                            help="Comparação com o nível exigido pela vaga")
+                col_ader1, col_ader2, col_ader3 = st.columns(3)
+                with col_ader1:
+                    st.metric("Nível Académico", f"{detalhe['Aderência Acadêmica']*100:.0f}%", help="100% = Atende ou supera o requisito.")
+                with col_ader2:
+                    st.metric("Nível de Inglês", f"{detalhe['Aderência Inglês']*100:.0f}%", help="100% = Atende ou supera o requisito.")
+                with col_ader3:
+                    st.metric("Nível de Espanhol", f"{detalhe['Aderência Espanhol']*100:.0f}%", help="100% = Atende ou supera o requisito.")
+
+                col_comp1, col_comp2 = st.columns(2)
+                with col_comp1:
+                    st.markdown("**Competências encontradas:**")
+                    st.success(detalhe["TermosEncontrados"] or "Nenhuma competência encontrada.", icon="✅")
+                with col_comp2:
+                    st.markdown("**Principais competências em falta:**")
+                    st.warning(detalhe["TermosFaltantes"] or "Nenhuma competência em falta.", icon="⚠️")
                 
                 st.markdown("**Trecho processado do currículo:**")
-                st.text(detalhe["TextoProcessado"])
-
-        # Exportar resultados
-        st.divider()
+                st.text_area("Texto Analisado", value=detalhe["TextoProcessado"], height=150, disabled=True, key=f"texto_{detalhe['ID']}")
+    
+    with tab_export:
+        st.header("Download dos Resultados da Análise")
+        st.markdown("Faça o download dos dados da análise nos formatos CSV.")
+        
         with st.container(border=True):
-            st.subheader("📤 Exportar Resultados")
+            df_detalhes_export = pd.DataFrame(detalhes_candidatos)
+            df_export_completo = pd.merge(df_resultados, df_detalhes_export, on="ID")
             
             col_exp1, col_exp2 = st.columns(2)
             with col_exp1:
                 csv_resumo = df_resultados.to_csv(index=False, sep=';', decimal=',', encoding='utf-8-sig')
-                st.download_button(
-                    label="📊 Exportar Resumo CSV",
-                    data=csv_resumo,
-                    file_name="resumo_candidatos.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
-            
+                st.download_button("📊 Exportar Resumo CSV", csv_resumo, f"resumo_candidatos_{job_title.replace(' ', '_')}.csv", "text/csv", use_container_width=True)
             with col_exp2:
-                df_detalhes_exp = pd.DataFrame(detalhes_candidatos)
-                csv_detalhes = df_detalhes_exp.to_csv(index=False, sep=';', decimal=',', encoding='utf-8-sig')
-                st.download_button(
-                    label="📝 Exportar Detalhes CSV",
-                    data=csv_detalhes,
-                    file_name="detalhes_candidatos.csv",
-                    mime="text/csv",
-                    use_container_width=True
-                )
+                csv_detalhes = df_export_completo.to_csv(index=False, sep=';', decimal=',', encoding='utf-8-sig')
+                st.download_button("📝 Exportar Detalhes CSV", csv_detalhes, f"detalhes_candidatos_{job_title.replace(' ', '_')}.csv", "text/csv", use_container_width=True)
+
+def render_main_page():
+    """Renderiza a página principal da ferramenta de análise."""
+    st.header("🎯 Ferramenta de Análise")
+    with st.container(border=True):
+        with st.form("vaga_form"):
+            st.subheader("📝 Informações da Vaga")
+            job_title = st.text_input("Título da Vaga*", placeholder="Ex: Engenheiro de Dados Sênior")
+            job_requirements = st.text_area("Competências Técnicas Requeridas*", placeholder="Ex: Python, SQL, Power BI, Machine Learning...", height=150, help="Liste as habilidades-chave (incluindo as com múltiplas palavras) separadas por vírgula.")
+            col1, col2 = st.columns(2)
+            with col1:
+                job_academic_level = st.selectbox("Nível Académico Requerido*", ["Ensino Médio", "Ensino Técnico", "Ensino Superior", "Pós-Graduação", "Mestrado", "Doutorado"])
+                job_english = st.selectbox("Inglês Exigido*", ["Nenhum", "Básico", "Intermediário", "Avançado", "Fluente"])
+            with col2:
+                job_professional_level = st.selectbox("Nível Profissional*", list(MAPA_NIVEL_PROFISSIONAL.keys()))
+                job_spanish = st.selectbox("Espanhol Exigido", ["Nenhum", "Básico", "Intermediário", "Avançado", "Fluente"])
+            st.subheader("👤 Currículos para Análise")
+            uploaded_files = st.file_uploader("Selecione os currículos em PDF*", type=["pdf"], accept_multiple_files=True)
+            submitted = st.form_submit_button("🚀 Analisar Candidatos", use_container_width=True)
+
+    if "resultados_df" in st.session_state and not submitted:
+        render_results(st.session_state.resultados_df, st.session_state.detalhes_candidatos, st.session_state.job_title)
+
+    if submitted:
+        if not all([job_title, job_requirements, uploaded_files]):
+            st.error("🚨 Por favor, preencha todos os campos obrigatórios (*) e envie pelo menos um currículo.")
+            st.stop()
+        
+        model, scaler, tfidf_vectorizer = load_models()
+        resultados, detalhes_candidatos = [], []
+        termos_vaga = extrair_competencias(job_requirements)
+        req_preprocessados_tfidf = preprocessar_texto(" ".join(termos_vaga))
+        mapa_academico = {"ensino médio": 1, "ensino técnico": 1.5, "ensino superior": 2, "pós-graduação": 3, "mestrado": 4, "doutorado": 5}
+        mapa_idioma = {"nenhum": 0, "básico": 1, "intermediário": 2, "avançado": 3, "fluente": 4}
+        nivel_academico_vaga = mapear_nivel(job_academic_level, mapa_academico)
+        nivel_ingles_vaga = mapear_nivel(job_english, mapa_idioma)
+        nivel_espanhol_vaga = mapear_nivel(job_spanish, mapa_idioma)
+        nivel_profissional_vaga = MAPA_NIVEL_PROFISSIONAL.get(job_professional_level, 0)
+        
+        for idx, uploaded_file in enumerate(uploaded_files):
+            with st.spinner(f"Processando {uploaded_file.name}..."):
+                cv_text_raw = extract_text_from_pdf(BytesIO(uploaded_file.getvalue()))
+                if not cv_text_raw:
+                    st.warning(f"Não foi possível extrair texto de {uploaded_file.name}.")
+                    continue
+                cv_preprocessado_completo = preprocessar_texto(cv_text_raw)
+                termos_encontrados = {term for term in termos_vaga if term in cv_text_raw.lower()}
+                match_percent = len(termos_encontrados) / len(termos_vaga) if termos_vaga else 0
+                try:
+                    tfidf_matrix = tfidf_vectorizer.transform([req_preprocessados_tfidf, cv_preprocessado_completo])
+                    similaridade = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:2])[0][0]
+                except Exception:
+                    similaridade = 0.0
+                nivel_academico_candidato = mapear_nivel(cv_text_raw, mapa_academico)
+                aderencia_academica = 1.0 if nivel_academico_candidato >= nivel_academico_vaga else 0.0
+                nivel_ingles_candidato = mapear_nivel(cv_text_raw, mapa_idioma)
+                aderencia_ingles = 1.0 if nivel_ingles_candidato >= nivel_ingles_vaga else 0.0
+                nivel_espanhol_candidato = mapear_nivel(cv_text_raw, mapa_idioma)
+                aderencia_espanhol = 1.0 if nivel_espanhol_candidato >= nivel_espanhol_vaga else 0.0
+                
+                features = np.array([[
+                    match_percent, similaridade, len(termos_encontrados),
+                    aderencia_academica, aderencia_ingles, aderencia_espanhol,
+                    nivel_profissional_vaga / 10
+                ]]).reshape(1, -1)
+                
+                features_scaled = scaler.transform(features)
+                probabilidade = model.predict_proba(features_scaled)[0, 1]
+                score_combinado = (probabilidade * 0.3) + (match_percent * 0.4) + (similaridade * 0.2) + (aderencia_academica * 0.1)
+                status, _ = calcular_status(score_combinado)
+                
+                resultados.append({"ID": idx + 1, "Nome": uploaded_file.name, "Score Combinado": score_combinado, "Status": status, "Probabilidade": probabilidade, "Match": match_percent})
+                detalhes_candidatos.append({"ID": idx + 1, "Nome": uploaded_file.name, "Probabilidade": probabilidade, "Match": match_percent, "Aderência Acadêmica": aderencia_academica, "Aderência Inglês": aderencia_ingles, "Aderência Espanhol": aderencia_espanhol, "TermosEncontrados": ", ".join(sorted(termos_encontrados)) or "Nenhum", "TermosFaltantes": ", ".join(sorted(termos_vaga - termos_encontrados)) or "Nenhum", "TextoProcessado": cv_preprocessado_completo[:500] + "..."})
+        
+        if resultados:
+            st.session_state.resultados_df = pd.DataFrame(resultados).sort_values("Score Combinado", ascending=False)
+            st.session_state.detalhes_candidatos = detalhes_candidatos
+            st.session_state.job_title = job_title
+            st.rerun()
+        else:
+            st.warning("Nenhum candidato pôde ser processado.")
+
+def render_metrics_page():
+    """Renderiza a página com a explicação das métricas de avaliação."""
+    st.title("📊 Métricas de Avaliação")
+    st.markdown("""
+    Esta secção detalha como cada candidato é avaliado, garantindo um processo transparente e baseado em dados.
+    """)
+    
+    st.subheader("⚖️ Peso do Cálculo do Score Combinado")
+    st.markdown("""
+    O **Score Combinado** é uma média ponderada de quatro fatores principais,
+    desenhado para fornecer uma visão holística da adequação de um candidato.
+    - **40% Match de Competências:** A percentagem de competências técnicas requeridas na vaga que foram encontradas textualmente no currículo. É a métrica com maior peso.
+    - **30% Probabilidade do Modelo:** A confiança do modelo de Machine Learning (de 0 a 100%) de que o candidato é um bom "fit", com base na análise conjunta de 7 características.
+    - **20% Similaridade Textual:** Mede a semelhança de contexto e semântica entre o currículo e a descrição da vaga, usando a técnica TF-IDF.
+    - **10% Aderência Académica:** Verifica se o nível de formação do candidato atende ao requisito mínimo da vaga.
+    """)
+
+    st.subheader("Como Interpretar as Métricas")
+    st.markdown("""
+    | Métrica             | Descrição                               | Como Interpretar                                                                    |
+    |---------------------|-----------------------------------------|-------------------------------------------------------------------------------------|
+    | **Score Combinado** | Avaliação final ponderada (0-100%).     | - **✅ ≥60%:** Apto<br>- **🟨 40-59%:** Em análise<br>- **❌ <40%:** Não apto        |
+    | **Match** | % de competências encontradas.          | Quanto maior, mais requisitos técnicos o candidato atende.                          |
+    | **Probabilidade** | Previsão do modelo (0-100%).            | A confiança do modelo de que o perfil do candidato é adequado para a vaga.          |
+    | **Aderência** | Adequação aos requisitos.               | Mostra se o candidato atende aos requisitos de formação e idiomas.                  |
+    """)
+
+def render_storytelling_page():
+    """Renderiza a página de Storytelling do projeto."""
+    st.title("📖 Storytelling do Projeto")
+    st.markdown("""
+    ### O Problema
+    No dinâmico mercado de trabalho atual, recrutadores enfrentam um desafio monumental: analisar centenas, por vezes milhares, de currículos para cada vaga. Este processo manual não é apenas demorado e repetitivo, mas também está sujeito a vieses inconscientes que podem levar à exclusão de talentos promissores. Encontrar o candidato ideal numa pilha de documentos é como procurar uma agulha num palheiro.
+    ### A Solução
+    Esta ferramenta nasceu para revolucionar a triagem inicial de candidatos. Utilizando o poder do **Processamento de Linguagem Natural (NLP)** e de modelos de **Machine Learning**, a nossa aplicação transforma o processo de recrutamento. Ela lê e interpreta os currículos, compara-os de forma inteligente com os requisitos da vaga e gera um **score de compatibilidade** objetivo e baseado em dados.
+    ### O Impacto
+    O nosso objetivo é claro: **libertar o tempo e o talento dos recrutadores**. Ao automatizar a triagem, permitimos que os profissionais de RH se foquem no que realmente importa: as interações humanas, as entrevistas estratégicas e a construção de relações com os melhores talentos. A ferramenta não substitui o recrutador, mas sim potencia as suas capacidades, oferecendo uma análise objetiva que ajuda a construir equipas mais fortes e diversificadas.
+    """)
+
+def render_tech_page():
+    """Renderiza a página com as tecnologias utilizadas no projeto."""
+    st.title("🛠️ Tecnologias Utilizadas")
+    st.markdown("Esta aplicação foi construída com um conjunto de tecnologias modernas e robustas do ecossistema Python, focadas em ciência de dados e desenvolvimento web.")
+    
+    st.subheader("Interface e Visualização")
+    st.markdown("- **Streamlit:** Framework principal para a criação da interface web interativa.")
+    
+    st.subheader("Análise e Manipulação de Dados")
+    st.markdown("- **Pandas:** Utilizado para a estruturação e manipulação eficiente dos dados dos resultados.")
+    st.markdown("- **NumPy:** Essencial para cálculos numéricos e a criação das 'features' para o modelo.")
+    
+    st.subheader("Machine Learning e NLP")
+    st.markdown("- **Scikit-learn:** A biblioteca central para o nosso modelo de Machine Learning (`RandomForestClassifier`), pré-processamento (`MinMaxScaler`) e cálculo de similaridade (`TfidfVectorizer`, `cosine_similarity`).")
+    st.markdown("- **NLTK (Natural Language Toolkit):** Usado para o processamento de texto, como a remoção de 'stopwords', fundamental para a análise de competências.")
+    
+    st.subheader("Processamento de Ficheiros")
+    st.markdown("- **PyPDF2:** Biblioteca que permite a extração de texto diretamente dos ficheiros de currículo em formato PDF.")
+
+# --- FUNÇÃO PRINCIPAL E ROTEADOR DE PÁGINAS ---
+
+def main():
+    """Função principal que define a estrutura da aplicação e a navegação."""
+    st.set_page_config(page_title="Sistema de Triagem de CVs", layout="wide", initial_sidebar_state="expanded")
+    
+    render_sidebar()
+    st.title("Sistema Inteligente de Triagem de Currículos")
+    
+    # Navegação por Abas no Topo da Página
+    tab_main, tab_metrics, tab_story, tab_tech = st.tabs(["Análise de Currículos", "Métricas de Avaliação", "Storytelling do Projeto", "Tecnologias Utilizadas"])
+
+    with tab_main:
+        render_main_page()
+    
+    with tab_metrics:
+        render_metrics_page()
+    
+    with tab_story:
+        render_storytelling_page()
+        
+    with tab_tech:
+        render_tech_page()
 
 if __name__ == "__main__":
     main()
