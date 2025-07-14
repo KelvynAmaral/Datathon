@@ -7,3 +7,5 @@ imbalanced-learn
 xgboost
 lightgbm
 gdown
+nltk
+PyPDF2
