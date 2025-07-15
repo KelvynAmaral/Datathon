@@ -12,6 +12,7 @@ import PyPDF2
 from io import BytesIO
 from datetime import datetime
 from pathlib import Path
+import plotly.express as px
 
 # --- CONFIGURAÇÃO INICIAL E CONSTANTES ---
 
@@ -95,11 +96,11 @@ def mapear_nivel(texto_cv: str, mapa: dict) -> int:
 def calcular_status(score: float) -> tuple[str, str]:
     """Calcula o status e a cor correspondente com base no score."""
     if score >= 0.6:
-        return "✅ Apto (Alto)", "green"
+        return "✅ Recomendado", "green"
     elif score >= 0.4:
-        return "🟨 Em análise (Médio)", "orange"
+        return "🟨 Potencial", "orange"
     else:
-        return "❌ Não apto (Baixo)", "red"
+        return "❌ Baixa Aderência", "red"
 
 # --- FUNÇÕES DE RENDERIZAÇÃO DE PÁGINAS E COMPONENTES ---
 
@@ -113,7 +114,7 @@ def render_sidebar():
         comparando-os com os requisitos de uma vaga.
         """)
         st.divider()
-        st.markdown(f"**Versão:** 10.0 | {datetime.now().strftime('%d/%m/%Y')}")
+        st.markdown(f"**Versão:** 12.0 | {datetime.now().strftime('%d/%m/%Y')}")
 
 def render_results(df_resultados, detalhes_candidatos, job_title):
     """Renderiza os resultados da análise em múltiplas abas."""
@@ -129,15 +130,60 @@ def render_results(df_resultados, detalhes_candidatos, job_title):
             melhor_score = df_resultados['Score Combinado'].max()
             st.metric("Melhor Score Encontrado", f"{melhor_score:.1%}")
         with col2:
-            status_counts = df_resultados['Status'].value_counts()
+            status_counts = df_resultados['Status'].value_counts().rename_axis('Status').reset_index(name='Contagem')
             st.dataframe(status_counts, use_container_width=True)
-        st.subheader("Distribuição de Status")
-        st.bar_chart(status_counts)
+            
+        st.subheader("Distribuição de Status dos Candidatos")
+        
+        # Mapeamento de cores atualizado para o gráfico
+        color_map = {
+            "✅ Recomendado": "green",
+            "🟨 Potencial": "orange",
+            "❌ Baixa Aderência": "red"
+        }
+        
+        fig = px.bar(
+            status_counts, 
+            x='Status', 
+            y='Contagem',
+            color='Status',
+            color_discrete_map=color_map,
+            text='Contagem'
+        )
+        fig.update_layout(xaxis_title="Status", yaxis_title="Número de Candidatos")
+        st.plotly_chart(fig, use_container_width=True)
+
 
     with tab_ranking:
         st.header("Visão Geral dos Candidatos")
+        
+        col_filter1, col_filter2 = st.columns([3, 1])
+        
+        with col_filter1:
+            status_options = df_resultados['Status'].unique().tolist()
+            status_selecionado = st.multiselect(
+                "Filtrar por Status:",
+                options=status_options,
+                default=status_options,
+                key='ranking_status_filter'
+            )
+        
+        with col_filter2:
+            st.write("") 
+            st.write("")
+            top_10_apto = st.checkbox("Ver Top 10 Recomendados", key='ranking_top10_filter')
+
+        # Lógica de filtragem atualizada
+        df_filtrado_ranking = df_resultados.copy()
+        if top_10_apto:
+            df_filtrado_ranking = df_filtrado_ranking[df_filtrado_ranking['Status'] == "✅ Recomendado"].head(10)
+        elif status_selecionado:
+            df_filtrado_ranking = df_filtrado_ranking[df_filtrado_ranking['Status'].isin(status_selecionado)]
+        else:
+            df_filtrado_ranking = pd.DataFrame(columns=df_resultados.columns)
+
         st.dataframe(
-            df_resultados[["ID", "Nome", "Score Combinado", "Status", "Probabilidade", "Match"]],
+            df_filtrado_ranking[["ID", "Nome", "Score Combinado", "Status", "Probabilidade", "Match"]],
             column_config={
                 "Score Combinado": st.column_config.ProgressColumn("Score", format="%.1f%%", min_value=0, max_value=1),
                 "Probabilidade": st.column_config.ProgressColumn("Prob.", format="%.1f%%", min_value=0, max_value=1),
@@ -149,19 +195,48 @@ def render_results(df_resultados, detalhes_candidatos, job_title):
 
     with tab_individual:
         st.header("Análise Detalhada por Candidato")
-        for detalhe in detalhes_candidatos:
+
+        col_ind_filter1, col_ind_filter2 = st.columns([3, 1])
+        with col_ind_filter1:
+            status_options_ind = df_resultados['Status'].unique().tolist()
+            status_selecionado_ind = st.multiselect(
+                "Filtrar por Status:",
+                options=status_options_ind,
+                default=status_options_ind,
+                key='individual_status_filter'
+            )
+        with col_ind_filter2:
+            st.write("")
+            st.write("")
+            top_10_apto_ind = st.checkbox("Ver Top 10 Recomendados", key='individual_top10_filter')
+
+        df_filtrado_individual = df_resultados.copy()
+        if top_10_apto_ind:
+            df_filtrado_individual = df_filtrado_individual[df_filtrado_individual['Status'] == "✅ Recomendado"].head(10)
+        elif status_selecionado_ind:
+            df_filtrado_individual = df_filtrado_individual[df_filtrado_individual['Status'].isin(status_selecionado_ind)]
+        else:
+            df_filtrado_individual = pd.DataFrame(columns=df_resultados.columns)
+
+        ids_para_exibir = df_filtrado_individual['ID'].tolist()
+        detalhes_filtrados = [d for d in detalhes_candidatos if d['ID'] in ids_para_exibir]
+
+        for detalhe in detalhes_filtrados:
             with st.container(border=True):
                 score_combinado = df_resultados.loc[df_resultados['ID'] == detalhe['ID'], 'Score Combinado'].iloc[0]
-                st.subheader(f"� {detalhe['Nome']} (Score: {score_combinado:.1%})")
+                status_texto, _ = calcular_status(score_combinado)
+                
+                st.subheader(f"� {detalhe['Nome']}")
+                st.write(f"**Status:** {status_texto}")
                 
                 st.markdown("**Métricas Principais:**")
                 col1, col2, col3 = st.columns(3)
                 with col1:
-                    st.metric("Probabilidade do Modelo", f"{detalhe['Probabilidade']:.1%}")
-                with col2:
-                    st.metric("Match de Competências", f"{detalhe['Match']:.1%}")
-                with col3:
                     st.metric("Score Combinado", f"{score_combinado:.1%}")
+                with col2:
+                    st.metric("Probabilidade do Modelo", f"{detalhe['Probabilidade']:.1%}")
+                with col3:
+                    st.metric("Match de Competências", f"{detalhe['Match']:.1%}")
 
                 st.markdown("**Aderência aos Requisitos:**")
                 col_ader1, col_ader2, col_ader3 = st.columns(3)
@@ -274,7 +349,6 @@ def render_main_page():
         
         if resultados:
             st.session_state.resultados_df = pd.DataFrame(resultados).sort_values("Score Combinado", ascending=False)
-            # Ordena os detalhes para corresponder ao ranking
             ids_ordenados = st.session_state.resultados_df['ID'].tolist()
             st.session_state.detalhes_candidatos = sorted(detalhes_candidatos, key=lambda x: ids_ordenados.index(x['ID']))
             st.session_state.job_title = job_title
@@ -303,7 +377,7 @@ def render_metrics_page():
     st.markdown("""
     | Métrica             | Descrição                               | Como Interpretar                                                                    |
     |---------------------|-----------------------------------------|-------------------------------------------------------------------------------------|
-    | **Score Combinado** | Avaliação final ponderada (0-100%).     | - **✅ ≥60%:** Apto<br>- **🟨 40-59%:** Em análise<br>- **❌ <40%:** Não apto        |
+    | **Score Combinado** | Avaliação final ponderada (0-100%).     | - **✅ 60%:** Apto- **🟨 40-59%:** Em análise- **❌ <40%:** Não apto        |
     | **Match** | % de competências encontradas.          | Quanto maior, mais requisitos técnicos o candidato atende.                          |
     | **Probabilidade** | Previsão do modelo (0-100%).            | A confiança do modelo de que o perfil do candidato é adequado para a vaga.          |
     | **Aderência** | Adequação aos requisitos.               | Mostra se o candidato atende aos requisitos de formação e idiomas.                  |
@@ -312,7 +386,6 @@ def render_metrics_page():
 def render_storytelling_page():
     """Renderiza a página de Storytelling do projeto."""
     st.title("📖 Storytelling do Projeto")
-    st.image("https://storage.googleapis.com/gemini-prod-us-west1-423907-8353/images/7a0402.png-ce9c0648-a0b8-45b7-8385-3dd46fef44e4", use_container_width=True)
     st.markdown("""
     ### O Problema
     No dinâmico mercado de trabalho atual, recrutadores enfrentam um desafio monumental: analisar centenas, por vezes milhares, de currículos para cada vaga. Este processo manual não é apenas demorado e repetitivo, mas também está sujeito a vieses inconscientes que podem levar à exclusão de talentos promissores. Encontrar o candidato ideal numa pilha de documentos é como procurar uma agulha num palheiro.
@@ -367,4 +440,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-�
