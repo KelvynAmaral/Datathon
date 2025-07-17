@@ -2,8 +2,8 @@
 
 MAPA_NIVEL_PROFISSIONAL = {
     'aprendiz': 1, 'trainee': 2, 'auxiliar': 3, 'assistente': 4,
-    'técnico de nível médio': 5, 'júnior': 5.5, 'analista': 6,
-    'pleno': 7, 'supervisor': 7, 'líder': 7.5, 'sênior': 8,
+    'técnico': 5, 'junior': 6,
+    'pleno': 7, 'supervisor': 7, 'sênior': 8,
     'especialista': 9, 'coordenador': 9, 'gerente': 10
 }
 

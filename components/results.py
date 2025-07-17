@@ -27,16 +27,9 @@ def render_results(df_resultados, detalhes_candidatos, job_title):
 def render_dashboard_tab(df_resultados):
     """Renderiza a aba de Dashboard com gráfico de colunas"""
     st.header("Dashboard da Análise")
-    
-    # Seção 1: Tratado de candidatos
-    st.subheader("Tratado de candidatos autoritários")
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write("1. [Item 1]")
-    with col2:
-        st.write("2. [Item 2]")
-    
-    # Seção 2: Métrica principal
+
+
+    # Seção 1: Métrica principal
     st.subheader("Métricas Principais")
     col1, col2, col3 = st.columns(3)
     with col1:
