@@ -5,10 +5,20 @@ import joblib
 import streamlit as st
 
 def extract_text_from_pdf(uploaded_file: BytesIO) -> str:
-    """Extrai texto de arquivos PDF"""
+    """Extrai texto de arquivos PDF com tratamento de caracteres inválidos"""
     try:
         pdf_reader = PyPDF2.PdfReader(uploaded_file)
-        text = "".join(page.extract_text() or "" for page in pdf_reader.pages)
+        text = ""
+        for page in pdf_reader.pages:
+            try:
+                page_text = page.extract_text()
+                if page_text:
+                    # Remove caracteres problemáticos
+                    page_text = page_text.encode("utf-8", errors="ignore").decode("utf-8", errors="ignore")
+                    text += page_text
+            except Exception as e:
+                st.warning(f"Erro ao extrair texto de uma página: {e}")
+                continue
         return text
     except Exception as e:
         st.error(f"Erro ao ler PDF: {str(e)}")
