@@ -61,7 +61,4 @@ def render_tech_page():
     - Leitura em memória
     """)
 
-    st.divider()
-    st.subheader("🔧 Arquitetura do Sistema")
-    st.image("https://storage.googleapis.com/gemini-prod-us-west1-423907-8353/images/7a0402.png-ce9c0648-a0b8-45b7-8385-3dd46fef44e4", 
-             caption="Diagrama de Arquitetura Simplificado", width=600)
+ 

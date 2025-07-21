@@ -108,3 +108,6 @@ Este projeto foi desenvolvido por:
 
 * Kelvyn Candido
 * Anderson Silva
+* Sandra
+* Michael
+* Evandro Gardin
